@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>p2paste.hoc.run</title>
+  <link rel="stylesheet" href="https://ad.hoc.run/global.css">
+  <style>
+    :root {
+      --bg: #0d0d0d;
+      --fg: #e2e2e2;
+      --dim: #666666;
+      --accent: #00ff88;
+      --accent-dark: #00cc6a;
+      --border: #2a2a2a;
+      --font: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Consolas', 'Courier New', monospace;
+      --font-size: 14px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { height: 100%; }
+    body { font-family: var(--font); font-size: var(--font-size); line-height: 1.6;
+           background: var(--bg); color: var(--fg); -webkit-font-smoothing: antialiased; }
+    a { color: var(--accent); text-decoration: none; }
+    input, textarea, button { font-family: var(--font); font-size: var(--font-size);
+      color: var(--fg); background: var(--bg); border: 1px solid var(--border); outline: none; }
+    input:focus, textarea:focus { border-color: var(--accent); }
+    button { cursor: pointer; border: 1px solid var(--accent); color: var(--accent);
+             padding: 4px 16px; transition: background 0.1s, color 0.1s; }
+    button:hover { background: var(--accent); color: var(--bg); }
+    ::selection { background: var(--accent); color: var(--bg); }
+
+    html, body { height: 100%; overflow: hidden; }
+    body { display: flex; flex-direction: column; }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .brand { color: var(--dim); font-size: 12px; white-space: nowrap; }
+    .brand .path { color: var(--fg); }
+
+    .idle-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-left: auto;
+    }
+
+    .code-label { color: var(--dim); font-size: 12px; }
+
+    #my-code {
+      color: var(--accent);
+      font-size: 15px;
+      font-weight: bold;
+      cursor: pointer;
+      letter-spacing: 0.1em;
+      transition: color 0.1s;
+      user-select: all;
+    }
+    #my-code:hover { color: var(--accent-dark); }
+
+    .sep { color: var(--border); user-select: none; }
+
+    #peer-code {
+      width: 72px;
+      padding: 3px 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      font-size: 14px;
+      background: transparent;
+    }
+    #peer-code::placeholder { letter-spacing: 0; text-transform: none; }
+
+    .session-wrap {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      margin-left: auto;
+    }
+
+    #disconnect-btn {
+      border-color: var(--dim);
+      color: var(--dim);
+      font-size: 12px;
+      padding: 3px 10px;
+    }
+    #disconnect-btn:hover { border-color: #ff4444; color: #ff4444; background: transparent; }
+
+    #status { font-size: 11px; color: var(--dim); white-space: nowrap; }
+    #status.error { color: #ff4444; }
+
+    #paste {
+      flex: 1;
+      width: 100%;
+      padding: 20px 24px;
+      resize: none;
+      border: none;
+      font-size: 15px;
+      line-height: 1.65;
+      background: var(--bg);
+      color: var(--fg);
+      caret-color: var(--accent);
+    }
+    #paste::placeholder { color: var(--dim); }
+    #paste:focus { border: none; box-shadow: none; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">$ <span class="path">p2paste.hoc.run</span></div>
+
+    <div class="idle-wrap" id="idle-wrap">
+      <span class="code-label">your code:</span>
+      <span id="my-code" title="click to copy">·····</span>
+      <span class="sep">|</span>
+      <span class="code-label">peer:</span>
+      <input type="text" id="peer-code" maxlength="5" placeholder="XXXXX"
+             autocomplete="off" spellcheck="false">
+      <button onclick="connectToPeer()">connect</button>
+      <span id="status">connecting…</span>
+    </div>
+
+    <div class="session-wrap" id="session-wrap">
+      <span id="status2" class="connected"></span>
+      <button id="disconnect-btn" onclick="disconnect()">disconnect</button>
+    </div>
+  </div>
+
+  <textarea id="paste" placeholder="start typing — syncs automatically once connected..."></textarea>
+
+  <script>
+    // ── constants ──────────────────────────────────────────────────────────
+    const CHARS   = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const RELAY   = 'wss://p2relay.gunnarsbjorkman.workers.dev';
+    const SYNC_MS = 200;
+
+    // ── state ─────────────────────────────────────────────────────────────
+    const S = { IDLE: 'idle', HANDSHAKING: 'handshaking', PAIRED: 'paired' };
+    let appState    = S.IDLE;
+    let myCode      = genCode();
+    let ws          = null;
+    let isInitiator = false;
+    let keyPair     = null;
+    let sharedKey   = null;
+    let kpPromise   = null;
+    let syncTimer   = null;
+    let lastSent    = '';
+    let peerCode    = '';
+
+    // ── code generation ───────────────────────────────────────────────────
+    function genCode() {
+      return Array.from({ length: 5 }, () =>
+        CHARS[Math.floor(Math.random() * CHARS.length)]
+      ).join('');
+    }
+
+    // ── crypto ────────────────────────────────────────────────────────────
+    function startKeyGen() {
+      return crypto.subtle.generateKey(
+        { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']
+      );
+    }
+
+    async function deriveShared(theirRawBytes) {
+      if (!keyPair) keyPair = await kpPromise;
+      const theirPub = await crypto.subtle.importKey(
+        'raw', new Uint8Array(theirRawBytes),
+        { name: 'ECDH', namedCurve: 'P-256' }, false, []
+      );
+      return crypto.subtle.deriveKey(
+        { name: 'ECDH', public: theirPub },
+        keyPair.privateKey,
+        { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+      );
+    }
+
+    async function encryptText(text) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv }, sharedKey, new TextEncoder().encode(text)
+      );
+      return { iv: [...iv], ct: [...new Uint8Array(ct)] };
+    }
+
+    async function decryptMsg(msg) {
+      const pt = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: new Uint8Array(msg.iv) },
+        sharedKey, new Uint8Array(msg.ct)
+      );
+      return new TextDecoder().decode(pt);
+    }
+
+    // ── websocket send ────────────────────────────────────────────────────
+    function wsSend(obj) {
+      if (ws && ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify(obj));
+    }
+
+    // ── message handler ───────────────────────────────────────────────────
+    async function handleMessage(event) {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+
+      if (msg.type === 'peer-left') {
+        endSession('disconnected');
+        return;
+      }
+
+      if (msg.type === 'pubkey') {
+        if (appState === S.IDLE) {
+          // Host: peer joined our room — respond with our pubkey
+          appState = S.HANDSHAKING;
+          peerCode = msg.code || '';
+          updateUI();
+          setStatus2('securing…');
+          try {
+            sharedKey = await deriveShared(msg.raw);
+            keyPair = await kpPromise;
+            const raw = await crypto.subtle.exportKey('raw', keyPair.publicKey);
+            wsSend({ type: 'pubkey', raw: [...new Uint8Array(raw)], code: myCode });
+            appState = S.PAIRED;
+            setStatus2('secured' + (peerCode ? ' · ' + peerCode : ''));
+            updateUI();
+            await sendSync();
+          } catch { endSession('key exchange failed', 'error'); }
+
+        } else if (appState === S.HANDSHAKING && isInitiator) {
+          // Joiner: received host's pubkey response
+          try {
+            sharedKey = await deriveShared(msg.raw);
+            peerCode = msg.code || peerCode;
+            appState = S.PAIRED;
+            setStatus2('secured' + (peerCode ? ' · ' + peerCode : ''));
+            updateUI();
+            await sendSync();
+          } catch { endSession('key exchange failed', 'error'); }
+        }
+        return;
+      }
+
+      if (msg.type === 'sync' && appState === S.PAIRED && sharedKey) {
+        try {
+          const text = await decryptMsg(msg);
+          document.getElementById('paste').value = text;
+          lastSent = text;
+        } catch {}
+      }
+    }
+
+    // ── send sync ─────────────────────────────────────────────────────────
+    async function sendSync() {
+      if (appState !== S.PAIRED || !ws || !sharedKey) return;
+      if (ws.readyState !== WebSocket.OPEN) { endSession('channel closed', 'error'); return; }
+      const content = document.getElementById('paste').value;
+      if (content === lastSent) return;
+      try {
+        const enc = await encryptText(content);
+        wsSend({ type: 'sync', ...enc });
+        lastSent = content;
+      } catch { setStatus2('sync error — reconnect?'); }
+    }
+
+    // ── session lifecycle ─────────────────────────────────────────────────
+    function resetSession() {
+      appState    = S.IDLE;
+      isInitiator = false;
+      keyPair     = null;
+      sharedKey   = null;
+      kpPromise   = null;
+      lastSent    = '';
+      peerCode    = '';
+    }
+
+    function endSession(statusMsg, statusCls) {
+      if (appState === S.IDLE) return;
+      const oldWs = ws;
+      ws = null;
+      resetSession();
+      if (oldWs) { oldWs.onclose = null; oldWs.onerror = null; try { oldWs.close(); } catch {} }
+      setStatus(statusMsg || 'disconnected', statusCls || '');
+      updateUI();
+      initRoom();
+    }
+
+    // ── public actions ────────────────────────────────────────────────────
+    function connectToPeer() {
+      if (appState !== S.IDLE) { setStatus('already in session', 'error'); return; }
+      const code = document.getElementById('peer-code').value.trim().toUpperCase();
+      if (code.length !== 5) { setStatus('need 5-char code', 'error'); return; }
+      if (code === myCode)   { setStatus("can't self-connect", 'error'); return; }
+
+      // Leave own room
+      if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch {} ws = null; }
+
+      peerCode    = code;
+      isInitiator = true;
+      appState    = S.HANDSHAKING;
+      kpPromise   = startKeyGen();
+      setStatus('connecting…');
+      updateUI();
+
+      ws = new WebSocket(`${RELAY}/${code}`);
+
+      ws.onopen = async () => {
+        setStatus2('securing…');
+        try {
+          keyPair = await kpPromise;
+          const raw = await crypto.subtle.exportKey('raw', keyPair.publicKey);
+          wsSend({ type: 'pubkey', raw: [...new Uint8Array(raw)], code: myCode });
+        } catch { endSession('key gen failed', 'error'); }
+      };
+
+      ws.onmessage = handleMessage;
+
+      ws.onclose = ws.onerror = () => {
+        if (appState !== S.IDLE) endSession('peer not found', 'error');
+      };
+    }
+
+    function disconnect() {
+      endSession('disconnected');
+    }
+
+    // ── init room ─────────────────────────────────────────────────────────
+    function initRoom() {
+      if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch {} }
+      document.getElementById('my-code').textContent = '·····';
+      kpPromise   = startKeyGen();
+      isInitiator = false;
+
+      ws = new WebSocket(`${RELAY}/${myCode}`);
+
+      ws.onopen = () => {
+        document.getElementById('my-code').textContent = myCode;
+        setStatus('waiting');
+      };
+
+      ws.onmessage = handleMessage;
+
+      ws.onclose = ws.onerror = () => {
+        if (appState !== S.IDLE) {
+          endSession('disconnected');
+        } else {
+          // Lost relay connection while idle — reconnect
+          setStatus('reconnecting…');
+          setTimeout(initRoom, 2000);
+        }
+      };
+    }
+
+    // ── ui helpers ────────────────────────────────────────────────────────
+    function setStatus(msg, cls) {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className   = cls || '';
+    }
+    function setStatus2(msg) { document.getElementById('status2').textContent = msg; }
+    function updateUI() {
+      const inSession = appState !== S.IDLE;
+      document.getElementById('idle-wrap').style.display    = inSession ? 'none' : 'flex';
+      document.getElementById('session-wrap').style.display = inSession ? 'flex' : 'none';
+    }
+
+    // ── textarea sync ─────────────────────────────────────────────────────
+    document.getElementById('paste').addEventListener('input', () => {
+      if (appState !== S.PAIRED) return;
+      clearTimeout(syncTimer);
+      syncTimer = setTimeout(sendSync, SYNC_MS);
+    });
+
+    // ── misc ui ───────────────────────────────────────────────────────────
+    document.getElementById('my-code').addEventListener('click', () => {
+      navigator.clipboard.writeText(myCode).then(() => {
+        const el = document.getElementById('my-code');
+        const prev = el.textContent;
+        el.textContent = 'copied!';
+        setTimeout(() => { el.textContent = prev; }, 1000);
+      });
+    });
+
+    document.getElementById('peer-code').addEventListener('keydown', e => {
+      if (e.key === 'Enter') connectToPeer();
+    });
+
+    document.getElementById('peer-code').addEventListener('input', e => {
+      const pos = e.target.selectionStart;
+      e.target.value = e.target.value.toUpperCase();
+      e.target.setSelectionRange(pos, pos);
+    });
+
+    // ── boot ─────────────────────────────────────────────────────────────
+    initRoom();
+  </script>
+</body>
+</html>

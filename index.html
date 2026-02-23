@@ -6,114 +6,31 @@
   <title>p2paste.hoc.run</title>
   <link rel="stylesheet" href="https://ad.hoc.run/global.css">
   <style>
-    :root {
-      --bg: #0d0d0d;
-      --fg: #e2e2e2;
-      --dim: #666666;
-      --accent: #00ff88;
-      --accent-dark: #00cc6a;
-      --border: #2a2a2a;
-      --font: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Consolas', 'Courier New', monospace;
-      --font-size: 14px;
-    }
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html { height: 100%; }
-    body { font-family: var(--font); font-size: var(--font-size); line-height: 1.6;
-           background: var(--bg); color: var(--fg); -webkit-font-smoothing: antialiased; }
-    a { color: var(--accent); text-decoration: none; }
-    input, textarea, button { font-family: var(--font); font-size: var(--font-size);
-      color: var(--fg); background: var(--bg); border: 1px solid var(--border); outline: none; }
-    input:focus, textarea:focus { border-color: var(--accent); }
-    button { cursor: pointer; border: 1px solid var(--accent); color: var(--accent);
-             padding: 4px 16px; transition: background 0.1s, color 0.1s; }
-    button:hover { background: var(--accent); color: var(--bg); }
-    ::selection { background: var(--accent); color: var(--bg); }
-
     html, body { height: 100%; overflow: hidden; }
-    body { display: flex; flex-direction: column; }
 
-    .topbar {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      padding: 8px 16px;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-      flex-wrap: wrap;
-    }
-
-    .brand { color: var(--dim); font-size: 12px; white-space: nowrap; }
-    .brand .path { color: var(--fg); }
-
-    .idle-wrap {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-left: auto;
-    }
-
+    .idle-wrap { display: flex; align-items: center; gap: 12px; margin-left: auto; }
     .code-label { color: var(--dim); font-size: 12px; }
-
-    #my-code {
-      color: var(--accent);
-      font-size: 15px;
-      font-weight: bold;
-      cursor: pointer;
-      letter-spacing: 0.1em;
-      transition: color 0.1s;
-      user-select: all;
-    }
+    #my-code { color: var(--accent); font-size: 15px; font-weight: bold; cursor: pointer; letter-spacing: 0.1em; transition: color 0.1s; user-select: all; }
     #my-code:hover { color: var(--accent-dark); }
-
     .sep { color: var(--border); user-select: none; }
-
-    #peer-code {
-      width: 72px;
-      padding: 3px 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      font-size: 14px;
-      background: transparent;
-    }
+    #peer-code { width: 72px; padding: 3px 6px; text-transform: uppercase; letter-spacing: 0.1em; font-size: 14px; background: transparent; }
     #peer-code::placeholder { letter-spacing: 0; text-transform: none; }
 
-    .session-wrap {
-      display: none;
-      align-items: center;
-      gap: 12px;
-      margin-left: auto;
-    }
-
-    #disconnect-btn {
-      border-color: var(--dim);
-      color: var(--dim);
-      font-size: 12px;
-      padding: 3px 10px;
-    }
+    .session-wrap { display: none; align-items: center; gap: 12px; margin-left: auto; }
+    #disconnect-btn { border-color: var(--dim); color: var(--dim); font-size: 12px; padding: 3px 10px; }
     #disconnect-btn:hover { border-color: #ff4444; color: #ff4444; background: transparent; }
 
     #status { font-size: 11px; color: var(--dim); white-space: nowrap; }
     #status.error { color: #ff4444; }
 
-    #paste {
-      flex: 1;
-      width: 100%;
-      padding: 20px 24px;
-      resize: none;
-      border: none;
-      font-size: 15px;
-      line-height: 1.65;
-      background: var(--bg);
-      color: var(--fg);
-      caret-color: var(--accent);
-    }
+    #paste { flex: 1; width: 100%; padding: 20px 24px; resize: none; border: none; font-size: 15px; line-height: 1.65; caret-color: var(--accent); }
     #paste::placeholder { color: var(--dim); }
     #paste:focus { border: none; box-shadow: none; }
   </style>
 </head>
 <body>
   <div class="topbar">
-    <div class="brand">$ <span class="path">p2paste.hoc.run</span></div>
+    <div class="prompt">$ <a href="https://ad.hoc.run">ad.hoc.run</a> → <span class="path">p2paste.hoc.run</span></div>
 
     <div class="idle-wrap" id="idle-wrap">
       <span class="code-label">your code:</span>
@@ -214,7 +131,6 @@
 
       if (msg.type === 'pubkey') {
         if (appState === S.IDLE) {
-          // Host: peer joined our room — respond with our pubkey
           appState = S.HANDSHAKING;
           peerCode = msg.code || '';
           updateUI();
@@ -231,7 +147,6 @@
           } catch { endSession('key exchange failed', 'error'); }
 
         } else if (appState === S.HANDSHAKING && isInitiator) {
-          // Joiner: received host's pubkey response
           try {
             sharedKey = await deriveShared(msg.raw);
             peerCode = msg.code || peerCode;
@@ -295,7 +210,6 @@
       if (code.length !== 5) { setStatus('need 5-char code', 'error'); return; }
       if (code === myCode)   { setStatus("can't self-connect", 'error'); return; }
 
-      // Leave own room
       if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch {} ws = null; }
 
       peerCode    = code;
@@ -347,7 +261,6 @@
         if (appState !== S.IDLE) {
           endSession('disconnected');
         } else {
-          // Lost relay connection while idle — reconnect
           setStatus('reconnecting…');
           setTimeout(initRoom, 2000);
         }
